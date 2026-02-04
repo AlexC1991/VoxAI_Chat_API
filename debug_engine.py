@@ -1,136 +1,117 @@
 import sys
 import os
 import time
-import ctypes
 import psutil
+# NOTE: We are NOT importing ctypes or setting LLAMA_CPP_LIB. 
+# We are letting the library work exactly as designed.
 from llama_cpp import Llama
 
-# Fix encoding for Windows console
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
-
 # ==========================================
-# 0. SYSTEM OVERRIDE
+# 0. SYSTEM PREP
 # ==========================================
 try:
     p = psutil.Process(os.getpid())
     p.nice(psutil.HIGH_PRIORITY_CLASS)
-    print("[SYSTEM] Priority: HIGH")
 except: pass
 
-os.environ["GGML_VK_FORCE_BUSY_WAIT"] = "1"
-os.environ["GGML_NUMA"] = "0"
+root_path = os.path.dirname(os.path.abspath(__file__))
 
 # ==========================================
-# 1. SETUP
+# 1. MODEL DETECTION
 # ==========================================
-ROOT_DIR = os.path.abspath(".")
-os.environ["PATH"] += os.pathsep + ROOT_DIR
-if hasattr(os, 'add_dll_directory'): os.add_dll_directory(ROOT_DIR)
-os.environ["GGML_BACKEND_SEARCH_PATH"] = ROOT_DIR
-os.environ["LLAMA_CPP_LIB"] = os.path.join(ROOT_DIR, "llama.dll")
+MODELS_DIR = os.path.join(root_path, "models")
+if not os.path.exists(MODELS_DIR):
+    sys.exit(f"\n[ERROR] Models folder not found at {MODELS_DIR}")
 
-try:
-    ggml = ctypes.CDLL(os.path.join(ROOT_DIR, "ggml.dll"))
-    if hasattr(ggml, 'ggml_backend_load_all'): ggml.ggml_backend_load_all()
-except: pass
+model_files = [f for f in os.listdir(MODELS_DIR) if f.endswith(".gguf")]
+if not model_files:
+    sys.exit("\n[ERROR] No .gguf files found in ./models")
 
-MODEL_FILENAME = "llama-3.2-3b-instruct-q4_k_m.gguf"
-model_path = os.path.join("models", MODEL_FILENAME)
+print("\nAVAILABLE MODELS:")
+for i, f in enumerate(model_files):
+    print(f" [{i+1}] {f}")
+
+while True:
+    try:
+        idx = int(input("\nSelect model for benchmark (1-N): "))
+        if 1 <= idx <= len(model_files):
+            model_path = os.path.join(MODELS_DIR, model_files[idx-1])
+            break
+    except ValueError: pass
+
+PROMPT = "Explain how a computer processor works in 100 words."
 
 # ==========================================
-# 2. OPTIMIZED CONFIGURATION
-# Based on comprehensive benchmarking results:
-# - 12 GPU layers is optimal for this APU (more layers = memory bandwidth bottleneck)
-# - FP16 cache provides best performance (Q8/Q4 compression doesn't help on this hardware)
-# - 8 generation threads / 2 batch threads prevents CPU contention
-# - 512 batch size is optimal
-# - 2048 context is sufficient (4096 adds minimal benefit)
+# 2. THE CLEAN SHOOTOUT
 # ==========================================
-CONFIG = {
-    "gpu_layers": 12,
-    "cache_k": "f16",
-    "cache_v": "f16", 
-    "threads": 8,
-    "threads_batch": 2,
-    "batch": 512,
-    "ctx": 2048
-}
+# We are testing if the "Default" behavior (which Ollama likely mimics) is better
+configs = [
+    {
+        "name": "Standard CPU (Default Load)",
+        "gpu_layers": 0, 
+        "threads": 8,
+        "batch": 512
+    },
+    {
+        "name": "Heavy CPU (High Batch)",
+        "gpu_layers": 0,
+        "threads": 8,
+        "batch": 1024 # Ollama uses larger batches
+    },
+    {
+        "name": "Hybrid (12 Layers)",
+        "gpu_layers": 12, # Try offloading a little bit
+        "threads": 8,
+        "batch": 512
+    }
+]
 
-PROMPT = "Write a 250 word short story about time travel."
-GEN_TOKENS = 250
+print("\n" + "="*50)
+print(" VOX-AI: SANITY CHECK (NO DLL OVERRIDES)")
+print("="*50)
 
-print("\n" + "="*60)
-print(" VOX-AI DEBUG ENGINE (Optimized)")
-print("="*60)
-print(f" Config: {CONFIG['gpu_layers']}L GPU | {CONFIG['cache_k']}/{CONFIG['cache_v']} Cache")
-print(f"         {CONFIG['threads']}/{CONFIG['threads_batch']} Threads | {CONFIG['batch']} Batch | {CONFIG['ctx']} Ctx")
-print("="*60)
-
-try:
-    llm = Llama(
-        model_path=model_path,
-        n_ctx=CONFIG['ctx'],
-        n_gpu_layers=CONFIG['gpu_layers'],
-        cache_type_k=CONFIG['cache_k'],
-        cache_type_v=CONFIG['cache_v'],
-        n_threads=CONFIG['threads'],
-        n_threads_batch=CONFIG['threads_batch'],
-        n_batch=CONFIG['batch'],
-        flash_attn=True,
-        use_mlock=True,
-        use_mmap=True,
-        verbose=False
-    )
+for cfg in configs:
+    print(f"\n--- TESTING: {cfg['name']} ---")
     
-    # WARMUP (Critical for consistent timing)
-    print("\n[Warming up...]")
-    for _ in range(3):
+    try:
+        # PURE STANDARD LOAD
+        llm = Llama(
+            model_path=model_path,
+            n_ctx=2048,
+            n_gpu_layers=cfg['gpu_layers'],
+            n_threads=cfg['threads'],
+            n_batch=cfg['batch'],
+            verbose=False
+        )
+        
+        # Warmup
         llm.create_chat_completion(messages=[{"role":"user","content":"."}], max_tokens=1)
-    
-    # THE REAL TEST - Using streaming to count ACTUAL tokens
-    print(f"\n>> Prompt: {PROMPT[:50]}...")
-    print(">> Generating (streaming)...\n")
-    
-    start = time.time()
-    first_token_time = None
-    token_count = 0
-    response_text = ""
-    
-    stream = llm.create_chat_completion(
-        messages=[{"role": "user", "content": PROMPT}],
-        max_tokens=GEN_TOKENS,
-        stream=True
-    )
-    
-    for chunk in stream:
-        if "content" in chunk["choices"][0]["delta"]:
-            token = chunk["choices"][0]["delta"]["content"]
-            if first_token_time is None:
-                first_token_time = time.time() - start
-            token_count += 1
-            response_text += token
-            print(token, end="", flush=True)
-    
-    total_time = time.time() - start
-    gen_time = total_time - first_token_time
-    
-    # Calculate ACTUAL t/s (based on real tokens generated)
-    actual_tps = token_count / total_time
-    gen_tps = (token_count - 1) / gen_time if gen_time > 0 and token_count > 1 else 0
-    
-    print("\n\n" + "="*60)
-    print(" RESULTS")
-    print("="*60)
-    print(f" Time to First Token (TTFT): {first_token_time*1000:.0f}ms")
-    print(f" Tokens Generated: {token_count}")
-    print(f" Total Time: {total_time:.2f}s")
-    print(f" ")
-    print(f" ACTUAL Speed (including TTFT): {actual_tps:.2f} t/s")
-    print(f" GENERATION Speed (after TTFT): {gen_tps:.2f} t/s")
-    print("="*60)
-    
-except Exception as e:
-    print(f"\n[ERROR] {e}")
+        
+        # Sprint
+        start = time.time()
+        token_count = 0
+        stream = llm.create_chat_completion(
+            messages=[{"role": "user", "content": PROMPT}],
+            max_tokens=200,
+            stream=True
+        )
+        
+        print("    >> Generating...", end="", flush=True)
+        for chunk in stream:
+            if "content" in chunk["choices"][0]["delta"]:
+                token_count += 1
+                if token_count % 20 == 0: print(".", end="", flush=True)
+                
+        duration = time.time() - start
+        tps = token_count / duration
+        print(f"\n    >> SPEED: {tps:.2f} t/s")
+        
+        del llm
+        
+    except Exception as e:
+        print(f"\n    >> FAILED: {e}")
 
-input("\nPress Enter to exit...")
+print("\n" + "="*50)
+print(" TEST COMPLETE")
+print("="*50)
+input("Press Enter to exit...")
