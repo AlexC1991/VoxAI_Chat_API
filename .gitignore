@@ -1,5 +1,6 @@
 # Secrets
 config.py
+.runpod.yaml
 .env
 __pycache__/
 *.key
