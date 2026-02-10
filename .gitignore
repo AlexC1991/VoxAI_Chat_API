@@ -1,41 +1,28 @@
-# Python
+# Secrets
+config.py
+.env
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-Build/
-build/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+*.key
+*.pem
+
+# Large Model Files (Do not commit GGUFs/AWQs)
+models/*.gguf
+models/*.awq
+models/*.bin
+models/
+
+# Keep the models folder itself, just not the content
+!models/.gitkeep
 
 # Virtual Environment
 venv/
 env/
-ENV/
+.venv/
 
-# VS Code
+# IDE Settings
 .vscode/
+.idea/
 
-# Project Specific
-models/*.gguf
-*.log
-.wrapper_version
-
-# Large binaries (Optional - keep if you want portability, remove if you want clean repo)
-# For this specific project, user wanted it "up to scruff for integration", 
-# but usually we don't commit 55MB DLLs. 
-# I will NOT ignore them by default as they seem core to the "Portable" nature, 
-# but models must be ignored.
+# System Files
+Thumbs.db
+Desktop.ini

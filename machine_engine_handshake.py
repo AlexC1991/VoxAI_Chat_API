@@ -27,7 +27,7 @@ def get_hardware_config():
     # This was the winner at ~7.5 t/s
     mode = "APU (Hybrid/Vulkan)"
     config = {
-        "n_gpu_layers": 12,           # The Bandwidth Sweet Spot
+        "n_gpu_layers": 26,           # The Bandwidth Sweet Spot
         "n_threads": optimal_threads, 
         "n_threads_batch": optimal_batch_threads, 
         "n_batch": 512,
